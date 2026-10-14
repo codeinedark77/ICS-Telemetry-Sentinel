@@ -45,7 +45,7 @@ from typing import Optional
 import numpy as np
 from sklearn.ensemble import IsolationForest
 
-MIN_SAMPLES = 300  # increased to 300 for proper Isolation Forest bootstrap
+MIN_SAMPLES = 30
 CUSUM_ALLOWANCE = 1.0      # k: std devs of deviation tolerated before it accumulates
 CUSUM_THRESHOLD = 10.0     # h: cumulative sum that triggers an alert
 SENSORS = ("vibration_mm_s", "temperature_c", "current_a")
@@ -55,7 +55,7 @@ class MultivariateDetector:
     """IsolationForest over the numeric sensor vector, trained once on an
     initial bootstrap period assumed to be anomaly-free."""
 
-    def __init__(self, sensors: tuple, bootstrap_size: int = MIN_SAMPLES):
+    def __init__(self, sensors: tuple, bootstrap_size: int = 300):
         self.sensors = sensors
         self.model = None
         self._bootstrap: list = []
@@ -119,9 +119,10 @@ class MachineScorer:
     """Tracks all sensors for one machine; turns per-sensor scores
     into a single health_score plus an alert decision."""
 
-    def __init__(self):
+    def __init__(self, use_multivariate: bool = False):
         self.baselines = {sensor: SensorBaseline() for sensor in SENSORS}
-        self.mv_detector = MultivariateDetector(SENSORS)
+        self.use_multivariate = use_multivariate
+        self.mv_detector = MultivariateDetector(SENSORS) if use_multivariate else None
         self._alerted_sensors: set = set()
         self._mv_alerted: bool = False
 
@@ -148,18 +149,19 @@ class MachineScorer:
             elif not b.alarmed and sensor in self._alerted_sensors:
                 self._alerted_sensors.discard(sensor)  # recovered
 
-        self.mv_detector.observe_bootstrap(reading)
-        mv_alert = self.mv_detector.detect(reading)
-        
-        if mv_alert and not self._mv_alerted:
-            self._mv_alerted = True
-            if alert:
-                alert += " | " + mv_alert
-            else:
-                alert = mv_alert
-                worst_sensor = "multivariate"
-        elif not mv_alert and self._mv_alerted:
-            self._mv_alerted = False
+        if self.mv_detector is not None:
+            self.mv_detector.observe_bootstrap(reading)
+            mv_alert = self.mv_detector.detect(reading)
+            
+            if mv_alert and not self._mv_alerted:
+                self._mv_alerted = True
+                if alert:
+                    alert += " | " + mv_alert
+                else:
+                    alert = mv_alert
+                    worst_sensor = "multivariate"
+            elif not mv_alert and self._mv_alerted:
+                self._mv_alerted = False
 
         health_score = max(0.0, 100.0 - (abs(worst_z) / CUSUM_ALLOWANCE / 3) * 50.0)
         
